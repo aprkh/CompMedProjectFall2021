@@ -46,7 +46,7 @@ df_bulbar_no_ID <- df_train[, 2:ncol(df_train)]
 df_bulbar_no_ID$SiteOnset_Class <- as.factor(df_bulbar_no_ID$SiteOnset_Class)
 df_upsample <- smote(SiteOnset_Class~., df_bulbar_no_ID, 
                      perc.over=6, perc.under=1, k=5)
-df_upsample$SiteOnset_Class <- as.integer(df_upsample$SiteOnset_Class)
+df_upsample$SiteOnset_Class <- as.integer(df_upsample$SiteOnset_Class)-1
 
 ## Split dataset into [Feature, vector]
 X <- df_upsample[, 2:ncol(df_upsample)]
@@ -65,6 +65,9 @@ gene_pheno_corr <- function(x, y) {
 ## Compute correlations 
 ranks <- sapply(X, function(x) gene_pheno_corr(x, y))
 
+## Compute t statistics
+tranks <- sapply(X, function(x) t.test(x ~ y)$statistic)
+
 ## Read in gene set
 gmt.file <- "genesets.gmt"
 pathways <- gmtPathways(gmt.file)
@@ -75,4 +78,13 @@ plotEnrichment(pathways[["GOBP_REGULATION_OF_NEURONAL_SYNAPTIC_PLASTICITY"]],
 plotEnrichment(pathways[["GOBP_MOTOR_NEURON_APOPTOTIC_PROCESS"]], 
                ranks) + labs(title="ALS")
 
+##---------------------------------------------------------
+## Train a classifier on the leading edge gene set
+##---------------------------------------------------------
 
+# feature selection
+features <- fgseaRes[order(fgseaRes$pval),]$leadingEdge[[1]]
+df_upsample_features <- df_upsample[, c("SiteOnset_Class", features)]
+
+logit_model <- glm(SiteOnset_Class~., family=binomial, data=df_upsample_features)
+summary(logit_model)
