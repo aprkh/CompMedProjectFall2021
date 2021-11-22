@@ -9,8 +9,8 @@ library(fgsea)
 library(data.table)
 library(ggplot2)
 
-gene_ex_data <- "bulbar_vs_limb/bulbar_data"
-load(gene_ex_data)
+df_bulbar <- read.csv("bulbar_vs_limb.csv")
+#load(gene_ex_data)
 
 ##---------------------------------------------------------
 ## Split into train/test
@@ -73,18 +73,71 @@ gmt.file <- "genesets.gmt"
 pathways <- gmtPathways(gmt.file)
 
 fgseaRes <- fgsea(pathways=pathways, stats=ranks)
-plotEnrichment(pathways[["GOBP_REGULATION_OF_NEURONAL_SYNAPTIC_PLASTICITY"]], 
-               ranks) + labs(title="ALS")
-plotEnrichment(pathways[["GOBP_MOTOR_NEURON_APOPTOTIC_PROCESS"]], 
-               ranks) + labs(title="ALS")
+# plotEnrichment(pathways[["GOBP_NEURON_INTRINSIC_APOPTOTIC
+#       _SIGNALING_PATHWAY_IN_RESPONSE_TO
+#       _OXIDATIVE_STRESS"]], 
+#                ranks) + labs(title="ALS")
+# plotEnrichment(pathways[["GOBP_MOTOR_NEURON_APOPTOTIC_PROCESS"]], 
+#                ranks) + labs(title="ALS")
+
+#Visualize the pathways and their performance (based on GSEA example code)
+topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=10), pathway]
+topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=10), pathway]
+topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
+plotGseaTable(pathways[topPathways], ranks, fgseaRes, 
+              gseaParam=0.5)
+
+#Grab a new dataframe containing only the GSEA results for the top performing pathways
+topPathwaysRes <- fgseaRes[fgseaRes$pathway %in% topPathways, ]
+#print(topPathwaysRes[order(fgseaRes$pval),]$leadingEdge[[17]])
 
 ##---------------------------------------------------------
 ## Train a classifier on the leading edge gene set
 ##---------------------------------------------------------
+library(caret)
 
-# feature selection
-features <- fgseaRes[order(fgseaRes$pval),]$leadingEdge[[1]]
-df_upsample_features <- df_upsample[, c("SiteOnset_Class", features)]
+#Grab the leading edge of each of the top pathway
+features <- topPathwaysRes[order(topPathwaysRes$pval),]$leadingEdge[[1]]
 
-logit_model <- glm(SiteOnset_Class~., family=binomial, data=df_upsample_features)
-summary(logit_model)
+#Alternatively, grab the *best* singular feature from each top pathway
+#This is similar to that paper we did in class
+top_features_temp <- topPathwaysRes$leadingEdge
+i = 1
+for (f in top_features_temp) {
+  top_features_temp[[i]] <- f[1]
+  i <- i+1
+}
+
+#Turn this into a vector because R datatypes R fun :)
+top_features_w_vec <- unlist(top_features_temp)
+
+#Grab unique values from the above vector
+top_features <- unique(top_features_w_vec)
+
+#Keep only our chosen features to train the model on
+df_upsample_features <- df_upsample[, c("SiteOnset_Class", top_features)] #or features
+
+#Factorize the predictor column (because 1 and 0 aren't good enough for R)
+df_upsample_features$SiteOnset_Class <- factor(df_upsample_features$SiteOnset_Class)
+
+#Create a trainControl object to carry out 5fold cross-validation
+train_control <- trainControl(method="cv",number=5)
+
+#Split out the training features and predictor column
+upsample_noclass <- subset(df_upsample_features,select=-SiteOnset_Class)
+
+#Train the model *****Specify different classifiers using the method parameter*****
+model <- train(upsample_noclass, df_upsample_features$SiteOnset_Class, method = "adaboost", trControl = train_control)
+
+#Prepare the test dataframe with the correct features
+test_df <- df_test[, c("SiteOnset_Class", features)]
+test_df$SiteOnset_Class <- factor(test_df$SiteOnset_Class)
+
+#Predict the values of SiteOnset_Class and store in predictions
+predictions <- predict(model, test_df)
+
+print(predictions)
+
+#Compute and print the confusion matrix
+summ_df <- confusionMatrix(predictions, test_df$SiteOnset_Class)
+print(summ_df)
