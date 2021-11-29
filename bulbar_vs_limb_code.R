@@ -8,6 +8,7 @@
 library(fgsea)
 library(data.table)
 library(ggplot2)
+library(caret)
 
 df_bulbar <- read.csv("bulbar_vs_limb.csv")
 #load(gene_ex_data)
@@ -31,8 +32,16 @@ bulbar_test <- sort(sample(bulbar_rows, nTestBulbar, replace=FALSE))
 
 test_rows <- sort(c(limb_test, bulbar_test))
 
-df_test <- df_bulbar[test_rows,]
-df_train <- df_bulbar[-test_rows,]
+## discard columns with near zero variance 
+nzv <- nearZeroVar(df_bulbar)
+df_bulbar <- df_bulbar[, -nzv]
+
+## standardize (z-transform) the columns 
+df_bulbar_scaled <- preProcess(df_bulbar[, c(-1, -2)], 
+                              method=c("center", "scale"))
+
+df_test <- predict(df_bulbar_scaled, df_bulbar[test_rows, ])
+df_train <- predict(df_bulbar_scaled, df_bulbar[-test_rows, ])
 
 ##---------------------------------------------------------
 ## Running GSEA
@@ -65,8 +74,8 @@ gene_pheno_corr <- function(x, y) {
 ## Compute correlations 
 ranks <- sapply(X, function(x) gene_pheno_corr(x, y))
 
-## Compute t statistics
-tranks <- sapply(X, function(x) t.test(x ~ y)$statistic)
+## Compute t statistics (not using for now)
+#tranks <- sapply(X, function(x) t.test(x ~ y)$statistic)
 
 ## Read in gene set
 gmt.file <- "genesets.gmt"
@@ -94,7 +103,6 @@ topPathwaysRes <- fgseaRes[fgseaRes$pathway %in% topPathways, ]
 ##---------------------------------------------------------
 ## Train a classifier on the leading edge gene set
 ##---------------------------------------------------------
-library(caret)
 
 #Grab the leading edge of each of the top pathway
 features <- topPathwaysRes[order(topPathwaysRes$pval),]$leadingEdge[[1]]
