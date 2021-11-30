@@ -4,44 +4,18 @@
 ## http://bioconductor.org/packages/release/bioc/vignettes/fgsea/inst/doc/fgsea-tutorial.html
 ##---------------------------------------------------------
 
+## set seed
+set.seed(99)   # Wayne Gretzky
+#set.seed(14)  # Austin Matthews
+
 ## libraries 
 library(fgsea)
 library(data.table)
 library(ggplot2)
 library(caret)
 
-df_bulbar <- read.csv("bulbar_vs_limb.csv")
-#load(gene_ex_data)
-
-##---------------------------------------------------------
-## Split into train/test
-##---------------------------------------------------------
-# limb = 1, bulbar = 0
-limb_rows <- which(df_bulbar[, c("SiteOnset_Class")] == 1)
-bulbar_rows <- which(df_bulbar[, c("SiteOnset_Class")] == 0)
-
-# stratified test/train sampling from both classes
-set.seed(99)
-percentageTest <- 30
-
-nTestLimb <- floor(percentageTest * length(limb_rows) / 100)
-limb_test <- sort(sample(limb_rows, nTestLimb, replace=FALSE))
-
-nTestBulbar <- floor(percentageTest * length(bulbar_rows) / 100)
-bulbar_test <- sort(sample(bulbar_rows, nTestBulbar, replace=FALSE))
-
-test_rows <- sort(c(limb_test, bulbar_test))
-
-## discard columns with near zero variance 
-nzv <- nearZeroVar(df_bulbar)
-df_bulbar <- df_bulbar[, -nzv]
-
-## standardize (z-transform) the columns 
-df_bulbar_scaled <- preProcess(df_bulbar[, c(-1, -2)], 
-                              method=c("center", "scale"))
-
-df_test <- predict(df_bulbar_scaled, df_bulbar[test_rows, ])
-df_train <- predict(df_bulbar_scaled, df_bulbar[-test_rows, ])
+## Note - we assume preprocessing steps from bulbar_vs_limb_code.R
+load("bulbar_vs_limb/bulbar_data_preprocessed")
 
 ##---------------------------------------------------------
 ## Running GSEA
@@ -81,7 +55,7 @@ ranks <- sapply(X, function(x) gene_pheno_corr(x, y))
 gmt.file <- "genesets.gmt"
 pathways <- gmtPathways(gmt.file)
 
-set.seed(99)
+
 fgseaRes <- fgsea(pathways=pathways, stats=ranks)
 # plotEnrichment(pathways[["GOBP_NEURON_INTRINSIC_APOPTOTIC
 #       _SIGNALING_PATHWAY_IN_RESPONSE_TO
@@ -102,99 +76,15 @@ plotGseaTable(pathways[topPathways], ranks, fgseaRes,
 topPathwaysRes <- fgseaRes[fgseaRes$pathway %in% topPathways, ]
 #print(topPathwaysRes[order(fgseaRes$pval),]$leadingEdge[[17]])
 
-#Grab the leading edge of each of the top pathway
-features <- topPathwaysRes[order(topPathwaysRes$pval),]$leadingEdge[[1]]
-
-#Alternatively, grab the *best* nFeatureSelect features from each top pathway
-#This is similar to that paper we did in class
-top_features_temp <- topPathwaysRes$leadingEdge
-nFeatureSelect <- 10
-i = 1
-for (f in top_features_temp) {
-  top_features_temp[[i]] <- f[1:min(length(f), nFeatureSelect)]
-  i <- i+1
-}
-
-#Turn this into a vector because R datatypes R fun :)
-top_features_w_vec <- unlist(top_features_temp)
-
-#Grab unique values from the above vector
-top_features <- unique(top_features_w_vec)
-
-#Keep only our chosen features to train the model on
-df_upsample_features <- df_upsample[, c("SiteOnset_Class", top_features)] #or features
-
-#Factorize the predictor column (because 1 and 0 aren't good enough for R)
-df_upsample_features$SiteOnset_Class <- factor(df_upsample_features$SiteOnset_Class)
-
-#Create a trainControl object to carry out 5fold cross-validation
-train_control <- trainControl(method="cv",number=5)
-
-#Split out the training features and predictor column
-upsample_noclass <- subset(df_upsample_features,select=-SiteOnset_Class)
-
-#Train the model *****Specify different classifiers using the method parameter*****
-model <- train(upsample_noclass, df_upsample_features$SiteOnset_Class, method = "adaboost", trControl = train_control)
-
-#Prepare the test dataframe with the correct features
-test_df <- df_test[, c("SiteOnset_Class", top_features)]  # or features
-test_df$SiteOnset_Class <- factor(test_df$SiteOnset_Class)
-
-#Predict the values of SiteOnset_Class and store in predictions
-predictions <- predict(model, test_df)
-
-print(predictions)
-
-#Compute and print the confusion matrix
-summ_df <- confusionMatrix(predictions, test_df$SiteOnset_Class)
-print(summ_df)
-
-## Plot ROC curve
-library(pROC)
-
-rocCurve <- pROC::roc(response=test_df[,1],
-                      predictor=as.numeric(predictions),
-                      level=levels(test_df[,1]))
-plot(rocCurve, legacy.axes=TRUE)
-
-##---------------------------------------------------------
-## Use a random forest on the leading edge gene set to see if 
-## we can determine some variable importance
-##---------------------------------------------------------
-## Code taken from https://compgenomr.github.io/book/trees-and-forests-random-forests-in-action.html#trees-to-forests
-set.seed(99)
-rfFit <- train(SiteOnset_Class~.,
-               data=df_upsample_features,  ## or use df_upsample_features for GSEA gene set
-               method="ranger", 
-               trControl=train_control,
-               importance="permutation", 
-               tuneGrid=data.frame(mtry=7,
-                                   min.node.size=1,
-                                   splitrule="gini")
-               )
-
-predictions <- predict(rfFit, test_df)
-
-print(predictions)
-
-#Compute and print the confusion matrix
-summ_df <- confusionMatrix(predictions, test_df$SiteOnset_Class)
-print(summ_df)
-
-## variable importance 
-plot(varImp(rfFit),top=20)
-
-rocCurve <- pROC::roc(response=test_df[,1],
-                      predictor=as.numeric(predictions),
-                      level=levels(test_df[,1]))
-plot(rocCurve, legacy.axes=TRUE)
-
 ##---------------------------------------------------------
 ## Try using all of the genes from all of the leading edge 
 ## gene sets
 ##---------------------------------------------------------
+
+#Create a trainControl object to carry out 5fold cross-validation
+train_control <- trainControl(method="cv",number=5)
+
 ## Code taken from https://compgenomr.github.io/book/trees-and-forests-random-forests-in-action.html#trees-to-forests
-set.seed(99)
 df_all_leading_genes <- df_upsample[, c("SiteOnset_Class", unique(unlist(topPathwaysRes$leadingEdge)))]
 df_all_leading_genes$SiteOnset_Class <- factor(df_all_leading_genes$SiteOnset_Class)
 rfFit <- train(SiteOnset_Class~.,
@@ -229,7 +119,7 @@ model <- train(SiteOnset_Class~., data=df_topFeatures, method = "adaboost", trCo
 
 ## Test Error
 test_df <- df_test[, c("SiteOnset_Class", colnames(df_all_leading_genes))]
-predictions <- predict(rfFit, test_df)
+predictions <- predict(model, test_df)
 
 print(predictions)
 
