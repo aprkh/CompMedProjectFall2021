@@ -81,6 +81,7 @@ ranks <- sapply(X, function(x) gene_pheno_corr(x, y))
 gmt.file <- "genesets.gmt"
 pathways <- gmtPathways(gmt.file)
 
+set.seed(99)
 fgseaRes <- fgsea(pathways=pathways, stats=ranks)
 # plotEnrichment(pathways[["GOBP_NEURON_INTRINSIC_APOPTOTIC
 #       _SIGNALING_PATHWAY_IN_RESPONSE_TO
@@ -90,8 +91,9 @@ fgseaRes <- fgsea(pathways=pathways, stats=ranks)
 #                ranks) + labs(title="ALS")
 
 #Visualize the pathways and their performance (based on GSEA example code)
-topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=10), pathway]
-topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=10), pathway]
+nPathways <- 3
+topPathwaysUp <- fgseaRes[ES > 0][head(order(pval), n=nPathways), pathway]
+topPathwaysDown <- fgseaRes[ES < 0][head(order(pval), n=nPathways), pathway]
 topPathways <- c(topPathwaysUp, rev(topPathwaysDown))
 plotGseaTable(pathways[topPathways], ranks, fgseaRes, 
               gseaParam=0.5)
@@ -107,12 +109,13 @@ topPathwaysRes <- fgseaRes[fgseaRes$pathway %in% topPathways, ]
 #Grab the leading edge of each of the top pathway
 features <- topPathwaysRes[order(topPathwaysRes$pval),]$leadingEdge[[1]]
 
-#Alternatively, grab the *best* singular feature from each top pathway
+#Alternatively, grab the *best* nFeatureSelect features from each top pathway
 #This is similar to that paper we did in class
 top_features_temp <- topPathwaysRes$leadingEdge
+nFeatureSelect <- 10
 i = 1
 for (f in top_features_temp) {
-  top_features_temp[[i]] <- f[1]
+  top_features_temp[[i]] <- f[1:min(length(f), nFeatureSelect)]
   i <- i+1
 }
 
@@ -138,7 +141,7 @@ upsample_noclass <- subset(df_upsample_features,select=-SiteOnset_Class)
 model <- train(upsample_noclass, df_upsample_features$SiteOnset_Class, method = "adaboost", trControl = train_control)
 
 #Prepare the test dataframe with the correct features
-test_df <- df_test[, c("SiteOnset_Class", features)]
+test_df <- df_test[, c("SiteOnset_Class", top_features)]  # or features
 test_df$SiteOnset_Class <- factor(test_df$SiteOnset_Class)
 
 #Predict the values of SiteOnset_Class and store in predictions
@@ -149,3 +152,95 @@ print(predictions)
 #Compute and print the confusion matrix
 summ_df <- confusionMatrix(predictions, test_df$SiteOnset_Class)
 print(summ_df)
+
+## Plot ROC curve
+library(pROC)
+
+rocCurve <- pROC::roc(response=test_df[,1],
+                      predictor=as.numeric(predictions),
+                      level=levels(test_df[,1]))
+plot(rocCurve, legacy.axes=TRUE)
+
+##---------------------------------------------------------
+## Use a random forest on the leading edge gene set to see if 
+## we can determine some variable importance
+##---------------------------------------------------------
+## Code taken from https://compgenomr.github.io/book/trees-and-forests-random-forests-in-action.html#trees-to-forests
+set.seed(99)
+rfFit <- train(SiteOnset_Class~.,
+               data=df_upsample_features,  ## or use df_upsample_features for GSEA gene set
+               method="ranger", 
+               trControl=train_control,
+               importance="permutation", 
+               tuneGrid=data.frame(mtry=7,
+                                   min.node.size=1,
+                                   splitrule="gini")
+               )
+
+predictions <- predict(rfFit, test_df)
+
+print(predictions)
+
+#Compute and print the confusion matrix
+summ_df <- confusionMatrix(predictions, test_df$SiteOnset_Class)
+print(summ_df)
+
+## variable importance 
+plot(varImp(rfFit),top=20)
+
+rocCurve <- pROC::roc(response=test_df[,1],
+                      predictor=as.numeric(predictions),
+                      level=levels(test_df[,1]))
+plot(rocCurve, legacy.axes=TRUE)
+
+##---------------------------------------------------------
+## Try using all of the genes from all of the leading edge 
+## gene sets
+##---------------------------------------------------------
+## Code taken from https://compgenomr.github.io/book/trees-and-forests-random-forests-in-action.html#trees-to-forests
+set.seed(99)
+df_all_leading_genes <- df_upsample[, c("SiteOnset_Class", unique(unlist(topPathwaysRes$leadingEdge)))]
+df_all_leading_genes$SiteOnset_Class <- factor(df_all_leading_genes$SiteOnset_Class)
+rfFit <- train(SiteOnset_Class~.,
+               data=df_all_leading_genes,
+               method="ranger", 
+               trControl=train_control,
+               importance="permutation", 
+               tuneGrid=data.frame(mtry=17,
+                                   min.node.size=1,
+                                   splitrule="gini")
+)
+
+## OOB Error
+rfFit$finalModel$prediction.error
+
+## Fit a second model on the top nTopFeatures random variables 
+nTopFeatures <- 10
+rfFitImportance <- varImp(rfFit)$importance 
+rfFitImportance$Gene <- rownames(rfFitImportance)
+nTopFeatures <- min(nTopFeatures, nrow(rfFitImportance))
+topFeatures <- rfFitImportance[order(rfFitImportance$Overall, decreasing=TRUE),][1:nTopFeatures, "Gene"]
+
+df_topFeatures <- df_upsample[, c("SiteOnset_Class", topFeatures)]
+df_topFeatures$SiteOnset_Class <- factor(df_topFeatures$SiteOnset_Class)
+
+## Using Adaboost for second classifier
+model <- train(SiteOnset_Class~., data=df_topFeatures, method = "adaboost", trControl = train_control)
+
+## Test Error
+test_df <- df_test[, c("SiteOnset_Class", colnames(df_all_leading_genes))]
+predictions <- predict(rfFit, test_df)
+
+print(predictions)
+
+#Compute and print the confusion matrix
+summ_df <- confusionMatrix(predictions, factor(test_df$SiteOnset_Class))
+print(summ_df)
+
+## variable importance 
+plot(varImp(rfFit),top=4)
+
+rocCurve <- pROC::roc(response=test_df[,1],
+                      predictor=as.numeric(predictions),
+                      level=levels(factor(test_df[,1])))
+plot(rocCurve, legacy.axes=TRUE)
